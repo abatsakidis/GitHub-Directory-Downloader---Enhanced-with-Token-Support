@@ -33,6 +33,9 @@ This is a **web-based tool** to download entire directories or single files from
 5. Use the **Clear** button to reset the input and logs.
 
 ---
+## Screenshots
+
+![App Screenshot](screenshot/screen.jpg)
 
 ## Notes
 
