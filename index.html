@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GitHub Directory Downloader - Enhanced with Token</title>
+<style>
+  body {
+    background-color: #0f0f0f;
+    color: #33ff33;
+    font-family: 'Courier New', Courier, monospace;
+    padding: 20px;
+  }
+  #container {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-weight: normal;
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+  }
+  #inputRow, #tokenRow {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  #urlInput, #tokenInput {
+    background: black;
+    color: #33ff33;
+    border: 1px solid #33ff33;
+    padding: 8px 12px;
+    font-size: 1rem;
+    flex-grow: 1;
+  }
+  #downloadBtn, #clearBtn {
+    background: #004400;
+    border: 1px solid #33ff33;
+    color: #33ff33;
+    padding: 8px 16px;
+    font-family: monospace;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    user-select: none;
+  }
+  #downloadBtn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+  #downloadBtn:hover:not(:disabled),
+  #clearBtn:hover {
+    background: #006600;
+  }
+  #message {
+    font-size: 0.9rem;
+    min-height: 20px;
+    margin-bottom: 6px;
+  }
+  #log {
+    background: black;
+    color: #33ff33;
+    font-family: monospace;
+    font-size: 0.9rem;
+    height: 300px;
+    overflow-y: auto;
+    border: 1px solid #33ff33;
+    padding: 10px;
+    white-space: pre-wrap;
+  }
+  label {
+    flex-shrink: 0;
+    line-height: 32px;
+    font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+
+<div id="container">
+  <h1>GitHub Directory Downloader - Enhanced with Token</h1>
+  <div id="inputRow">
+    <input type="text" id="urlInput" placeholder="Enter GitHub directory or file URL" autocomplete="off" />
+    <button id="clearBtn" title="Clear URL">Clear</button>
+    <button id="downloadBtn" disabled>Download</button>
+  </div>
+  <div id="tokenRow">
+    <label for="tokenInput">GitHub Token (optional):</label>
+    <input type="password" id="tokenInput" placeholder="Paste your GitHub personal access token here" autocomplete="off" />
+  </div>
+  <div id="message"></div>
+  <pre id="log"></pre>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.0/jszip.min.js"></script>
+
+<script>
+(async () => {
+  const urlInput = document.getElementById('urlInput');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const tokenInput = document.getElementById('tokenInput');
+  const logEl = document.getElementById('log');
+  const messageEl = document.getElementById('message');
+
+  function log(message) {
+    logEl.textContent += message + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setMessage(msg, isError = false) {
+    messageEl.textContent = msg;
+    messageEl.style.color = isError ? 'red' : '#33ff33';
+  }
+
+  function parseGitHubURL(url) {
+    try {
+      const u = new URL(url);
+      if (u.hostname !== 'github.com') return null;
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (parts.length < 4) return null;
+      const [user, repo, type, branch, ...pathParts] = parts;
+      if (!['tree', 'blob'].includes(type)) return null;
+      return { user, repo, type, branch, path: pathParts.join('/') };
+    } catch {
+      return null;
+    }
+  }
+
+  function validateInput() {
+    const val = urlInput.value.trim();
+    if (!val) {
+      setMessage('');
+      downloadBtn.disabled = true;
+      return;
+    }
+    const parsed = parseGitHubURL(val);
+    if (!parsed) {
+      setMessage('Invalid GitHub URL');
+      downloadBtn.disabled = true;
+    } else {
+      setMessage('');
+      downloadBtn.disabled = false;
+    }
+  }
+
+  urlInput.addEventListener('input', validateInput);
+
+  clearBtn.addEventListener('click', () => {
+    urlInput.value = '';
+    setMessage('');
+    downloadBtn.disabled = true;
+    logEl.textContent = '';
+    urlInput.focus();
+  });
+
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !downloadBtn.disabled) {
+      e.preventDefault();
+      downloadBtn.click();
+    }
+  });
+
+  // Create headers with optional token
+  function createHeaders() {
+    const headers = {};
+    const token = tokenInput.value.trim();
+    if (token) {
+      headers['Authorization'] = `token ${token}`;
+    }
+    return headers;
+  }
+
+  async function fetchJson(url) {
+    const headers = createHeaders();
+    const res = await fetch(url, { headers });
+    if (res.status === 403) {
+      const reset = res.headers.get('x-ratelimit-reset');
+      let resetTime = reset ? new Date(reset * 1000).toLocaleTimeString() : 'unknown';
+      throw new Error(`GitHub API rate limit exceeded. Try again after ${resetTime}`);
+    }
+    if (!res.ok) throw new Error(`HTTP error ${res.status} for ${url}`);
+    return res.json();
+  }
+
+  async function fetchGitHubContents(user, repo, branch, path) {
+    const apiBase = `https://api.github.com/repos/${user}/${repo}/contents/${path}?ref=${branch}`;
+    return fetchJson(apiBase);
+  }
+
+  async function downloadFileRawWithRetry(url, retries = 2) {
+    const headers = createHeaders();
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
+      try {
+        const res = await fetch(url, { headers });
+        if (!res.ok) throw new Error(`Failed to download file (status ${res.status})`);
+        return await res.blob();
+      } catch (e) {
+        if (attempt <= retries) {
+          log(`Retrying download (${attempt}/${retries}) for ${url}`);
+          await new Promise(r => setTimeout(r, 1000));
+        } else {
+          throw e;
+        }
+      }
+    }
+  }
+
+  async function gatherFiles(user, repo, branch, path = '') {
+    const files = [];
+    const items = await fetchGitHubContents(user, repo, branch, path);
+    if (!Array.isArray(items)) {
+      files.push(items);
+      return files;
+    }
+    for (const item of items) {
+      if (item.type === 'dir') {
+        const subFiles = await gatherFiles(user, repo, branch, item.path);
+        files.push(...subFiles);
+      } else if (item.type === 'file') {
+        files.push(item);
+      }
+    }
+    return files;
+  }
+
+  async function asyncPool(limit, array, iteratorFn) {
+    const ret = [];
+    const executing = [];
+    for (const item of array) {
+      const p = Promise.resolve().then(() => iteratorFn(item));
+      ret.push(p);
+
+      if (limit <= array.length) {
+        const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+        executing.push(e);
+        if (executing.length >= limit) {
+          await Promise.race(executing);
+        }
+      }
+    }
+    return Promise.all(ret);
+  }
+
+  downloadBtn.addEventListener('click', async () => {
+    downloadBtn.disabled = true;
+    logEl.textContent = '';
+    setMessage('Starting download...');
+    const url = urlInput.value.trim();
+    const parsed = parseGitHubURL(url);
+    if (!parsed) {
+      setMessage('Invalid GitHub URL', true);
+      downloadBtn.disabled = false;
+      return;
+    }
+
+    try {
+      log(`Fetching file list from repo: ${parsed.repo} branch: ${parsed.branch} path: /${parsed.path || ''}`);
+      let files;
+      if (parsed.type === 'blob') {
+        const fileInfo = await fetchGitHubContents(parsed.user, parsed.repo, parsed.branch, parsed.path);
+        files = [fileInfo];
+      } else {
+        files = await gatherFiles(parsed.user, parsed.repo, parsed.branch, parsed.path);
+      }
+      log(`Found ${files.length} file(s).`);
+
+      const JSZip = window.JSZip;
+      const zip = new JSZip();
+
+      let count = 0;
+
+      await asyncPool(4, files, async (file) => {
+        try {
+          log(`Downloading: ${file.path}`);
+          const blob = await downloadFileRawWithRetry(file.download_url);
+          zip.file(file.path, blob);
+          count++;
+          setMessage(`Downloaded ${count} / ${files.length}`);
+        } catch (e) {
+          log(`Error downloading ${file.path}: ${e.message}`);
+        }
+      });
+
+      if (count === 0) {
+        setMessage('No files downloaded.', true);
+        downloadBtn.disabled = false;
+        return;
+      }
+
+      setMessage('Preparing ZIP file...');
+      const content = await zip.generateAsync({ type: 'blob' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(content);
+      a.download = `${parsed.repo}-${parsed.branch}-${parsed.path.replace(/\//g, '_') || 'root'}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setMessage(`Done! Downloaded and zipped ${count} files.`);
+      log(`Finished successfully.`);
+    } catch (e) {
+      setMessage(`Error: ${e.message}`, true);
+      log(`Error: ${e.stack || e.message}`);
+    } finally {
+      downloadBtn.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
