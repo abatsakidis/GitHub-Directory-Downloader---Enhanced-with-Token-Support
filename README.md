@@ -1,4 +1,4 @@
-# GitHub Directory Downloader - Enhanced with Token Support
+# Github Directory Downloader - Enhanced with Token Support
 
 This is a **web-based tool** to download entire directories or single files from GitHub repositories, with optional support for using a GitHub Personal Access Token to bypass API rate limits.
 
